@@ -12,6 +12,7 @@ import pandas as pd
 import cv2
 import sys
 from tqdm import tqdm
+import open3d as o3d
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
@@ -187,11 +188,15 @@ def inference_single(model, pc_path, args, config, root=None):
         target_path = os.path.join(args.out_pc_root, os.path.splitext(pc_path)[0])
         os.makedirs(target_path, exist_ok=True)
 
-        # 保存补全后的点云
-        np.save(os.path.join(target_path, 'completed.npy'), dense_points)
+        # 保存补全后的点云为 PCD 格式
+        pcd_completed = o3d.geometry.PointCloud()
+        pcd_completed.points = o3d.utility.Vector3dVector(dense_points)
+        o3d.io.write_point_cloud(os.path.join(target_path, 'completed.pcd'), pcd_completed)
 
-        # 保存原始点云（用于对比）
-        np.save(os.path.join(target_path, 'input.npy'), pc_ndarray)
+        # 保存原始点云为 PCD 格式（用于对比）
+        pcd_input = o3d.geometry.PointCloud()
+        pcd_input.points = o3d.utility.Vector3dVector(pc_ndarray)
+        o3d.io.write_point_cloud(os.path.join(target_path, 'input.pcd'), pcd_input)
 
         # 保存可视化图片
         if args.save_vis_img:
