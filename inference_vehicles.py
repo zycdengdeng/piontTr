@@ -159,11 +159,15 @@ def inference_single(model, pc_path, args, config, root=None):
         m = np.max(np.sqrt(np.sum(pc_ndarray**2, axis=1)))
         pc_ndarray = pc_ndarray / m
 
-    # 数据变换
+    # 数据变换（使用配置文件中的点数）
+    n_points = config.dataset.test.others.get('n_points', 2048)
+    if hasattr(config.dataset.test, 'N_POINTS'):
+        n_points = config.dataset.test.N_POINTS
+
     transform = Compose([{
         'callback': 'UpSamplePoints',
         'parameters': {
-            'n_points': 2048
+            'n_points': n_points
         },
         'objects': ['input']
     }, {
