@@ -170,27 +170,17 @@ def inference_single(model, pc_path, args, config, root=None):
         m = np.max(np.sqrt(np.sum(pc_ndarray**2, axis=1)))
         pc_ndarray = pc_ndarray / m
 
-    # 数据变换
-    # 注意：原始模型在 2048 点上训练，但用户的点云平均有 2万+ 点
-    # 如果点数太多，下采样会丢失大量信息
-    current_points = pc_ndarray.shape[0]
-
-    # 如果点云已经很密集（>5000点），不要强制下采样到2048
-    # 而是使用合理的采样策略
-    if current_points > 5000:
-        # 密集点云：采样到 8192 点（保留更多信息）
-        target_points = 8192
-    elif current_points > 2048:
-        # 中等点云：采样到 4096 点
-        target_points = 4096
-    else:
-        # 稀疏点云：上采样到 2048 点
-        target_points = 2048
+    # 数据变换（统一使用 2048 点 - 模型训练时的点数）
+    # 用户场景：多帧融合点云，部分车完整密集(2万+点)，部分车缺失稀疏(几百点)
+    # 策略：统一降/升采样到 2048 点
+    # - 完整车：降采样后仍保持完整形状，模型输出完整点云
+    # - 缺失车："缺屁股"在降采样后仍可见，模型应补全缺失部分
+    # 注意：必须用 2048，因为模型在此点数上训练，输入更多点可能导致效果变差
 
     transform = Compose([{
         'callback': 'UpSamplePoints',
         'parameters': {
-            'n_points': target_points
+            'n_points': 2048
         },
         'objects': ['input']
     }, {
