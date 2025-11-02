@@ -140,102 +140,10 @@ def filter_pc_files(pc_root, valid_ids):
     return filtered_files
 
 
-def estimate_bbox_from_pointcloud(pc):
-    """
-    从点云估算 bounding box（用于 KITTI 归一化）
-    使用 PCA 估算主方向
-    """
-    # 计算中心
-    center = np.mean(pc, axis=0)
-    pc_centered = pc - center
-
-    # 使用 PCA 估算主方向
-    cov = np.cov(pc_centered.T)
-    eigenvalues, eigenvectors = np.linalg.eig(cov)
-
-    # 按特征值排序，获取主方向
-    idx = eigenvalues.argsort()[::-1]
-    eigenvectors = eigenvectors[:, idx]
-
-    # 旋转点云到主方向
-    pc_rotated = np.dot(pc_centered, eigenvectors)
-
-    # 获取 bounding box 的最小最大值
-    min_vals = pc_rotated.min(axis=0)
-    max_vals = pc_rotated.max(axis=0)
-
-    # 创建 8 个角点（在旋转后的坐标系中）
-    bbox_corners_rotated = np.array([
-        [min_vals[0], min_vals[1], min_vals[2]],  # 0
-        [max_vals[0], min_vals[1], min_vals[2]],  # 1
-        [max_vals[0], max_vals[1], min_vals[2]],  # 2
-        [min_vals[0], max_vals[1], min_vals[2]],  # 3
-        [min_vals[0], min_vals[1], max_vals[2]],  # 4
-        [max_vals[0], min_vals[1], max_vals[2]],  # 5
-        [max_vals[0], max_vals[1], max_vals[2]],  # 6
-        [min_vals[0], max_vals[1], max_vals[2]],  # 7
-    ])
-
-    # 转换回原始坐标系
-    bbox_corners = np.dot(bbox_corners_rotated, eigenvectors.T) + center
-
-    return bbox_corners
-
-
-def normalize_kitti_pointcloud(pc_ndarray):
-    """
-    KITTI 归一化处理（模拟 NormalizeObjectPose）
-    """
-    # 估算 bounding box
-    bbox = estimate_bbox_from_pointcloud(pc_ndarray)
-
-    # 计算中心
-    center = (bbox.min(0) + bbox.max(0)) / 2
-    bbox_centered = bbox - center
-
-    # 计算 yaw 角度（使用 bbox 的角点）
-    yaw = np.arctan2(bbox_centered[3, 1] - bbox_centered[0, 1],
-                     bbox_centered[3, 0] - bbox_centered[0, 0])
-
-    # 构建旋转矩阵
-    rotation = np.array([
-        [np.cos(yaw), -np.sin(yaw), 0],
-        [np.sin(yaw), np.cos(yaw), 0],
-        [0, 0, 1]
-    ])
-
-    # 旋转 bbox
-    bbox_rotated = np.dot(bbox_centered, rotation)
-
-    # 计算尺度
-    scale = bbox_rotated[3, 0] - bbox_rotated[0, 0]
-
-    # 归一化点云
-    pc_normalized = np.dot(pc_ndarray - center, rotation) / scale
-
-    # 坐标轴变换（KITTI 特有）
-    pc_normalized = np.dot(pc_normalized, [[1, 0, 0], [0, 0, 1], [0, 1, 0]])
-
-    return pc_normalized, center, rotation, scale
-
-
-def denormalize_kitti_pointcloud(pc_normalized, center, rotation, scale):
-    """
-    KITTI 反归一化
-    """
-    # 反向坐标轴变换
-    pc = np.dot(pc_normalized, [[1, 0, 0], [0, 0, 1], [0, 1, 0]])
-
-    # 反向缩放和旋转
-    pc = pc * scale
-    pc = np.dot(pc, rotation.T) + center
-
-    return pc
-
-
 def inference_single(model, pc_path, args, config, root=None):
     """
     对单个点云文件进行推理
+    完全按照原始 tools/inference.py 的逻辑
     """
     if root is not None:
         pc_file = os.path.join(root, pc_path)
@@ -244,45 +152,29 @@ def inference_single(model, pc_path, args, config, root=None):
 
     # 读取点云
     pc_ndarray = IO.get(pc_file).astype(np.float32)
-    pc_original = pc_ndarray.copy()  # 保存原始点云
+    pc_original = pc_ndarray.copy()  # 保存原始点云用于输出
 
-    # 根据模型类型进行归一化
-    kitti_params = None
-    shapenet_params = None
-
-    # 检查是否是 KITTI 数据集（需要特殊归一化）
-    is_kitti = False
-    if hasattr(config.dataset, 'test') and hasattr(config.dataset.test, '_base_'):
-        is_kitti = config.dataset.test._base_.get('NAME') == 'KITTI'
-
-    # 检查是否是 ShapeNet 数据集
+    # 检查是否是 ShapeNet 模型（只有 ShapeNet 需要归一化）
     is_shapenet = False
+    centroid = None
+    m = None
+
     if hasattr(config.dataset, 'train') and hasattr(config.dataset.train, '_base_'):
         is_shapenet = config.dataset.train._base_.get('NAME') == 'ShapeNet'
 
+    # 归一化处理（只有 ShapeNet 才做归一化）
     if is_shapenet:
-        # ShapeNet 归一化
+        # normalize it to fit the model on ShapeNet-55/34
         centroid = np.mean(pc_ndarray, axis=0)
         pc_ndarray = pc_ndarray - centroid
         m = np.max(np.sqrt(np.sum(pc_ndarray**2, axis=1)))
         pc_ndarray = pc_ndarray / m
-        shapenet_params = (centroid, m)
-    elif is_kitti:
-        # KITTI 归一化（使用估算的 bounding box）
-        pc_ndarray, center, rotation, scale = normalize_kitti_pointcloud(pc_ndarray)
-        kitti_params = (center, rotation, scale)
 
-    # 数据变换（使用配置文件中的点数）
-    n_points = 2048  # 默认值
-    if hasattr(config.dataset.test, 'N_POINTS'):
-        n_points = config.dataset.test.N_POINTS
-    elif hasattr(config.dataset.test, 'others'):
-        n_points = config.dataset.test.others.get('n_points', 2048)
-
+    # 数据变换（固定使用 UpSamplePoints 和 2048 点）
     transform = Compose([{
-        'callback': 'RandomSamplePoints',  # KITTI 使用 RandomSamplePoints
+        'callback': 'UpSamplePoints',
         'parameters': {
-            'n_points': n_points
+            'n_points': 2048
         },
         'objects': ['input']
     }, {
@@ -290,20 +182,17 @@ def inference_single(model, pc_path, args, config, root=None):
         'objects': ['input']
     }])
 
-    pc_ndarray_normalized = transform({'input': pc_ndarray})
+    pc_ndarray_transformed = transform({'input': pc_ndarray})
 
     # 推理
-    ret = model(pc_ndarray_normalized['input'].unsqueeze(0).to(args.device.lower()))
+    ret = model(pc_ndarray_transformed['input'].unsqueeze(0).to(args.device.lower()))
     dense_points = ret[-1].squeeze(0).detach().cpu().numpy()
 
-    # 反归一化
-    if shapenet_params is not None:
-        centroid, m = shapenet_params
+    # 反归一化（只有 ShapeNet 需要）
+    if is_shapenet and centroid is not None and m is not None:
+        # denormalize it to adapt for the original input
         dense_points = dense_points * m
         dense_points = dense_points + centroid
-    elif kitti_params is not None:
-        center, rotation, scale = kitti_params
-        dense_points = denormalize_kitti_pointcloud(dense_points, center, rotation, scale)
 
     # 保存结果
     if args.out_pc_root != '':
@@ -318,12 +207,12 @@ def inference_single(model, pc_path, args, config, root=None):
 
         # 保存原始点云为 PCD 格式（用于对比）
         pcd_input = o3d.geometry.PointCloud()
-        pcd_input.points = o3d.utility.Vector3dVector(pc_ndarray)
+        pcd_input.points = o3d.utility.Vector3dVector(pc_original)
         o3d.io.write_point_cloud(os.path.join(target_path, 'input.pcd'), pcd_input)
 
         # 保存可视化图片
         if args.save_vis_img:
-            input_img = misc.get_ptcloud_img(pc_ndarray_normalized['input'].numpy())
+            input_img = misc.get_ptcloud_img(pc_ndarray_transformed['input'].numpy())
             dense_img = misc.get_ptcloud_img(dense_points)
             cv2.imwrite(os.path.join(target_path, 'input.jpg'), input_img)
             cv2.imwrite(os.path.join(target_path, 'completed.jpg'), dense_img)
