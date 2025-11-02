@@ -170,11 +170,27 @@ def inference_single(model, pc_path, args, config, root=None):
         m = np.max(np.sqrt(np.sum(pc_ndarray**2, axis=1)))
         pc_ndarray = pc_ndarray / m
 
-    # 数据变换（固定使用 UpSamplePoints 和 2048 点）
+    # 数据变换
+    # 注意：原始模型在 2048 点上训练，但用户的点云平均有 2万+ 点
+    # 如果点数太多，下采样会丢失大量信息
+    current_points = pc_ndarray.shape[0]
+
+    # 如果点云已经很密集（>5000点），不要强制下采样到2048
+    # 而是使用合理的采样策略
+    if current_points > 5000:
+        # 密集点云：采样到 8192 点（保留更多信息）
+        target_points = 8192
+    elif current_points > 2048:
+        # 中等点云：采样到 4096 点
+        target_points = 4096
+    else:
+        # 稀疏点云：上采样到 2048 点
+        target_points = 2048
+
     transform = Compose([{
         'callback': 'UpSamplePoints',
         'parameters': {
-            'n_points': 2048
+            'n_points': target_points
         },
         'objects': ['input']
     }, {
